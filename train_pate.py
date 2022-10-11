@@ -2,7 +2,6 @@ import argparse
 import cv2
 import os
 
-import numpy as np
 import torch
 from torch.nn import DataParallel
 import torch.optim as optim
@@ -79,7 +78,7 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
     net = DataParallel(net).cuda()
     net.train()
     for epochId in range(current_epoch, 280):
-        #writer.add_scalar('Learning rate', np.array(scheduler.get_last_lr()), num_iter)
+        writer.add_scalar('Learning rate', scheduler.get_lr(), num_iter)
         scheduler.step()
         total_losses = [0, 0] * (num_refinement_stages + 1)  # heatmaps loss, paf loss per stage
         batch_per_iter_idx = 0
