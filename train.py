@@ -158,6 +158,8 @@ if __name__ == '__main__':
                         help='number of iterations to save checkpoint')
     parser.add_argument('--val-after', type=int, default=5000,
                         help='number of iterations to run validation')
+    parser.add_argument('--epoch-count', type=int, default=200, required=False,
+                        help='Number of epochs to train for')
     args = parser.parse_args()
 
     checkpoints_folder = '{}_checkpoints'.format(args.experiment_name)
