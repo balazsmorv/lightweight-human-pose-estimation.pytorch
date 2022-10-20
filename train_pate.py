@@ -5,7 +5,7 @@ import os
 import torch
 from torch.nn import DataParallel
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 from torch.utils.tensorboard import SummaryWriter
 
@@ -22,15 +22,31 @@ cv2.setNumThreads(0)
 cv2.ocl.setUseOpenCL(False)  # To prevent freeze of DataLoader
 
 
+def get_data_loaders(train_data, num_teachers, batch_size, num_workers):
+    """ Function to create data loaders for the Teacher classifier """
+    teacher_loaders = []
+    data_size = len(train_data) // (num_teachers + 1)
+
+    for i in range(data_size):
+        indices = list(range(i * data_size, (i + 1) * data_size))
+        subset_data = Subset(train_data, indices)
+        loader = torch.utils.data.DataLoader(subset_data, batch_size=batch_size, num_workers=num_workers)
+        teacher_loaders.append(loader)
+    indice = list(range((i + 1) * data_size, (i + 2) * data_size))
+    subset = Subset(train_data, indice)
+    student_loader = torch.utils.data.DataLoader(subset, batch_size=batch_size, num_workers=num_workers)
+
+    return teacher_loaders, student_loader
+
+
 def train(prepared_train_labels, train_images_folder, num_refinement_stages, base_lr, batch_size, batches_per_iter,
           num_workers, checkpoint_path, weights_only, from_mobilenet, checkpoints_folder, log_after,
-          val_labels, val_images_folder, val_output_name, checkpoint_after, val_after, writer):
-    net = PoseEstimationWithMobileNet(num_refinement_stages)
+          val_labels, val_images_folder, val_output_name, checkpoint_after, val_after, writer, num_teachers):
 
     stride = 8
     sigma = 7
     path_thickness = 1
-    dataset = CocoTrainDataset(prepared_train_labels, train_images_folder,
+    train_set = CocoTrainDataset(prepared_train_labels, train_images_folder,
                                stride, sigma, path_thickness,
                                transform=transforms.Compose([
                                    ConvertKeypoints(),
@@ -38,113 +54,141 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
                                    Rotate(pad=(128, 128, 128)),
                                    CropPad(pad=(128, 128, 128)),
                                    Flip()]))
-    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
-    optimizer = optim.Adam([
-        {'params': get_parameters_conv(net.model, 'weight')},
-        {'params': get_parameters_conv_depthwise(net.model, 'weight'), 'weight_decay': 0},
-        {'params': get_parameters_bn(net.model, 'weight'), 'weight_decay': 0},
-        {'params': get_parameters_bn(net.model, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
-        {'params': get_parameters_conv(net.cpm, 'weight'), 'lr': base_lr},
-        {'params': get_parameters_conv(net.cpm, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
-        {'params': get_parameters_conv_depthwise(net.cpm, 'weight'), 'weight_decay': 0},
-        {'params': get_parameters_conv(net.initial_stage, 'weight'), 'lr': base_lr},
-        {'params': get_parameters_conv(net.initial_stage, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
-        {'params': get_parameters_conv(net.refinement_stages, 'weight'), 'lr': base_lr * 4},
-        {'params': get_parameters_conv(net.refinement_stages, 'bias'), 'lr': base_lr * 8, 'weight_decay': 0},
-        {'params': get_parameters_bn(net.refinement_stages, 'weight'), 'weight_decay': 0},
-        {'params': get_parameters_bn(net.refinement_stages, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
-    ], lr=base_lr, weight_decay=5e-4)
 
+    train_loaders, student_loader = get_data_loaders(train_set, num_teachers, batch_size, num_workers)
     writer.add_scalar('Batch size', batch_size)
 
-    num_iter = 0
-    current_epoch = 0
-    drop_after_epoch = [100, 200, 260]
-    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=drop_after_epoch, gamma=0.333)
-    if checkpoint_path:
-        checkpoint = torch.load(checkpoint_path)
+    models = []
+    for i in range(num_teachers):
+        net = PoseEstimationWithMobileNet(num_refinement_stages)
+        train_loader = train_loaders[i]
 
-        if from_mobilenet:
-            load_from_mobilenet(net, checkpoint)
-        else:
-            load_state(net, checkpoint)
-            if not weights_only:
-                optimizer.load_state_dict(checkpoint['optimizer'])
-                scheduler.load_state_dict(checkpoint['scheduler'])
-                num_iter = checkpoint['iter']
-                current_epoch = checkpoint['current_epoch']
-
-    net = DataParallel(net).cuda()
-    net.train()
-    for epochId in range(current_epoch, 280):
-        writer.add_scalar('Learning rate', scheduler.get_lr(), num_iter)
-        scheduler.step()
-        total_losses = [0, 0] * (num_refinement_stages + 1)  # heatmaps loss, paf loss per stage
-        batch_per_iter_idx = 0
-        for batch_data in train_loader:
-            if batch_per_iter_idx == 0:
-                optimizer.zero_grad()
-
-            images = batch_data['image'].cuda()
-            keypoint_masks = batch_data['keypoint_mask'].cuda()
-            paf_masks = batch_data['paf_mask'].cuda()
-            keypoint_maps = batch_data['keypoint_maps'].cuda()
-            paf_maps = batch_data['paf_maps'].cuda()
-
-            stages_output = net(images)
-
-            losses = []
-            for loss_idx in range(len(total_losses) // 2):
-                losses.append(l2_loss(stages_output[loss_idx * 2], keypoint_maps, keypoint_masks, images.shape[0]))
-                writer.add_scalar('Loss/keypoint_map',
-                                  l2_loss(stages_output[loss_idx * 2], keypoint_maps, keypoint_masks, images.shape[0]),
-                                  num_iter)
-                losses.append(l2_loss(stages_output[loss_idx * 2 + 1], paf_maps, paf_masks, images.shape[0]))
-                writer.add_scalar('Loss/paf_map',
-                                  l2_loss(stages_output[loss_idx * 2 + 1], paf_maps, paf_masks, images.shape[0]),
-                                  num_iter)
-                total_losses[loss_idx * 2] += losses[-2].item() / batches_per_iter
-                total_losses[loss_idx * 2 + 1] += losses[-1].item() / batches_per_iter
+        optimizer = optim.Adam([
+            {'params': get_parameters_conv(net.model, 'weight')},
+            {'params': get_parameters_conv_depthwise(net.model, 'weight'), 'weight_decay': 0},
+            {'params': get_parameters_bn(net.model, 'weight'), 'weight_decay': 0},
+            {'params': get_parameters_bn(net.model, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
+            {'params': get_parameters_conv(net.cpm, 'weight'), 'lr': base_lr},
+            {'params': get_parameters_conv(net.cpm, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
+            {'params': get_parameters_conv_depthwise(net.cpm, 'weight'), 'weight_decay': 0},
+            {'params': get_parameters_conv(net.initial_stage, 'weight'), 'lr': base_lr},
+            {'params': get_parameters_conv(net.initial_stage, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
+            {'params': get_parameters_conv(net.refinement_stages, 'weight'), 'lr': base_lr * 4},
+            {'params': get_parameters_conv(net.refinement_stages, 'bias'), 'lr': base_lr * 8, 'weight_decay': 0},
+            {'params': get_parameters_bn(net.refinement_stages, 'weight'), 'weight_decay': 0},
+            {'params': get_parameters_bn(net.refinement_stages, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
+        ], lr=base_lr, weight_decay=5e-4)
 
 
+        num_iter = 0
+        current_epoch = 0
+        drop_after_epoch = [100, 200, 260]
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=drop_after_epoch, gamma=0.333)
+        if checkpoint_path:
+            checkpoint = torch.load(checkpoint_path)
 
-            loss = losses[0]
-            for loss_idx in range(1, len(losses)):
-                loss += losses[loss_idx]
-            loss /= batches_per_iter
-            loss.backward()
-            batch_per_iter_idx += 1
-            if batch_per_iter_idx == batches_per_iter:
-                optimizer.step()
-                batch_per_iter_idx = 0
-                num_iter += 1
+            if from_mobilenet:
+                load_from_mobilenet(net, checkpoint)
             else:
-                continue
+                load_state(net, checkpoint)
+                if not weights_only:
+                    optimizer.load_state_dict(checkpoint['optimizer'])
+                    scheduler.load_state_dict(checkpoint['scheduler'])
+                    num_iter = checkpoint['iter']
+                    current_epoch = checkpoint['current_epoch']
 
-            if num_iter % log_after == 0:
-                print('Iter: {}'.format(num_iter))
+        net = DataParallel(net).cuda()
+        net.train()
+        for epochId in range(current_epoch, 280):
+            writer.add_scalar('Learning rate', scheduler.get_lr(), num_iter)
+            scheduler.step()
+            total_losses = [0, 0] * (num_refinement_stages + 1)  # heatmaps loss, paf loss per stage
+            batch_per_iter_idx = 0
+            for batch_data in train_loader:
+                if batch_per_iter_idx == 0:
+                    optimizer.zero_grad()
+
+                images = batch_data['image'].cuda()
+                keypoint_masks = batch_data['keypoint_mask'].cuda()
+                paf_masks = batch_data['paf_mask'].cuda()
+                keypoint_maps = batch_data['keypoint_maps'].cuda()
+                paf_maps = batch_data['paf_maps'].cuda()
+
+                stages_output = net(images)
+
+                losses = []
                 for loss_idx in range(len(total_losses) // 2):
-                    print('\n'.join(['stage{}_pafs_loss:     {}', 'stage{}_heatmaps_loss: {}']).format(
-                        loss_idx + 1, total_losses[loss_idx * 2 + 1] / log_after,
-                        loss_idx + 1, total_losses[loss_idx * 2] / log_after))
-                for loss_idx in range(len(total_losses)):
-                    total_losses[loss_idx] = 0
-            if num_iter % checkpoint_after == 0:
-                snapshot_name = '{}/checkpoint_iter_{}.pth'.format(checkpoints_folder, num_iter)
-                torch.save({'state_dict': net.module.state_dict(),
-                            'optimizer': optimizer.state_dict(),
-                            'scheduler': scheduler.state_dict(),
-                            'iter': num_iter,
-                            'current_epoch': epochId},
-                           snapshot_name)
-            if num_iter % val_after == 0:
-                print('Validation...')
-                evaluate(val_labels, val_output_name, val_images_folder, net)
-                net.train()
+                    losses.append(l2_loss(stages_output[loss_idx * 2], keypoint_maps, keypoint_masks, images.shape[0]))
+                    writer.add_scalar('Loss/keypoint_map',
+                                      l2_loss(stages_output[loss_idx * 2], keypoint_maps, keypoint_masks, images.shape[0]),
+                                      num_iter)
+                    losses.append(l2_loss(stages_output[loss_idx * 2 + 1], paf_maps, paf_masks, images.shape[0]))
+                    writer.add_scalar('Loss/paf_map',
+                                      l2_loss(stages_output[loss_idx * 2 + 1], paf_maps, paf_masks, images.shape[0]),
+                                      num_iter)
+                    total_losses[loss_idx * 2] += losses[-2].item() / batches_per_iter
+                    total_losses[loss_idx * 2 + 1] += losses[-1].item() / batches_per_iter
+
+
+
+                loss = losses[0]
+                for loss_idx in range(1, len(losses)):
+                    loss += losses[loss_idx]
+                loss /= batches_per_iter
+                loss.backward()
+                batch_per_iter_idx += 1
+                if batch_per_iter_idx == batches_per_iter:
+                    optimizer.step()
+                    batch_per_iter_idx = 0
+                    num_iter += 1
+                else:
+                    continue
+
+                if num_iter % log_after == 0:
+                    print('Iter: {}'.format(num_iter))
+                    for loss_idx in range(len(total_losses) // 2):
+                        print('\n'.join(['stage{}_pafs_loss:     {}', 'stage{}_heatmaps_loss: {}']).format(
+                            loss_idx + 1, total_losses[loss_idx * 2 + 1] / log_after,
+                            loss_idx + 1, total_losses[loss_idx * 2] / log_after))
+                    for loss_idx in range(len(total_losses)):
+                        total_losses[loss_idx] = 0
+                if num_iter % checkpoint_after == 0:
+                    snapshot_name = '{}/checkpoint_iter_{}.pth'.format(checkpoints_folder, num_iter)
+                    torch.save({'state_dict': net.module.state_dict(),
+                                'optimizer': optimizer.state_dict(),
+                                'scheduler': scheduler.state_dict(),
+                                'iter': num_iter,
+                                'current_epoch': epochId},
+                               snapshot_name)
+                if num_iter % val_after == 0:
+                    print('Validation of teacher model ', str(i))
+                    evaluate(val_labels, val_output_name, val_images_folder, net)
+                    net.train()
 
     writer.close()
 
+
+def predict(model, dataloader):
+    outputs = torch.zeros(0, dtype=torch.long)
+    model.eval()
+
+    for images, labels in dataloader:
+        output = model.forward(images)
+        outputs = torch.cat((outputs, output), 0)
+    return outputs
+
+epsilon = 0.2
+def aggregated_teacher(models, dataloader, epsilon):
+
+    preds = torch.zeros((len(models), len(dataloader), 18, 2), dtype=torch.long)
+    for i, model in enumerate(models):
+        results = predict(model, dataloader) # num_images x 18 x 2
+        preds[i] = results
+
+    print(preds)
+
+    ## itt kene a zajt hozzaadni
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -175,6 +219,7 @@ if __name__ == '__main__':
                         help='number of iterations to run validation')
     parser.add_argument('--epoch-count', type=int, default=200, required=False,
                         help='Number of epochs to train for')
+    parser.add_argument('--num-teachers', type=int, default=2, required=False, help='Number of teacher models')
     args = parser.parse_args()
 
     checkpoints_folder = '{}_checkpoints'.format(args.experiment_name)
@@ -186,4 +231,4 @@ if __name__ == '__main__':
     train(args.prepared_train_labels, args.train_images_folder, args.num_refinement_stages, args.base_lr, args.batch_size,
           args.batches_per_iter, args.num_workers, args.checkpoint_path, args.weights_only, args.from_mobilenet,
           checkpoints_folder, args.log_after, args.val_labels, args.val_images_folder, args.val_output_name,
-          args.checkpoint_after, args.val_after, writer)
+          args.checkpoint_after, args.val_after, writer, args.num_teachers)
