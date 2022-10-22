@@ -17,26 +17,34 @@ from modules.loss import l2_loss
 from modules.load_state import load_state, load_from_mobilenet
 from val import evaluate
 from pate import perform_analysis_torch
+import pprint
 
 cv2.setNumThreads(0)
 cv2.ocl.setUseOpenCL(False)  # To prevent freeze of DataLoader
-
+pp = pprint.PrettyPrinter(indent=4)
 
 def get_data_loaders(train_data, num_teachers, batch_size, num_workers):
     """ Function to create data loaders for the Teacher classifier """
     teacher_loaders = []
-    data_size = len(train_data) // (num_teachers + 1)
+    #data_size = len(train_data) // (num_teachers + 2)
+    data_size = 300
 
-    for i in range(data_size):
+    for i in range(num_teachers):
         indices = list(range(i * data_size, (i + 1) * data_size))
         subset_data = Subset(train_data, indices)
+        print("data subset size = ", len(subset_data))
         loader = torch.utils.data.DataLoader(subset_data, batch_size=batch_size, num_workers=num_workers)
         teacher_loaders.append(loader)
-    indice = list(range((i + 1) * data_size, (i + 2) * data_size))
-    subset = Subset(train_data, indice)
-    student_loader = torch.utils.data.DataLoader(subset, batch_size=batch_size, num_workers=num_workers)
 
-    return teacher_loaders, student_loader
+    student_train_indices = list(range(num_teachers * data_size, (num_teachers + 1) * data_size))
+    subset = Subset(train_data, student_train_indices)
+    student_train_loader = torch.utils.data.DataLoader(subset, batch_size=batch_size, num_workers=num_workers)
+
+    student_test_indices = list(range((num_teachers + 1) * data_size, (num_teachers + 2) * data_size))
+    subset = Subset(train_data, student_test_indices)
+    student_test_loader = torch.utils.data.DataLoader(subset, batch_size=batch_size, num_workers=num_workers)
+
+    return teacher_loaders, student_train_loader, student_test_loader
 
 
 def train(prepared_train_labels, train_images_folder, num_refinement_stages, base_lr, batch_size, batches_per_iter,
@@ -56,11 +64,12 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
                                    Flip()]))
 
 
-    train_loaders, student_loader = get_data_loaders(train_set, num_teachers, batch_size, num_workers)
+    train_loaders, student_train_loader, student_test_loader = get_data_loaders(train_set, num_teachers, batch_size, num_workers)
     writer.add_scalar('Batch size', batch_size)
 
     models = []
     for i in range(num_teachers):
+        print("teacher ", i)
         net = PoseEstimationWithMobileNet(num_refinement_stages)
         train_loader = train_loaders[i]
 
@@ -100,8 +109,8 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
 
         net = DataParallel(net).cuda()
         net.train()
-        for epochId in range(current_epoch, 280):
-            writer.add_scalar('Learning rate', scheduler.get_lr(), num_iter)
+        for epochId in range(current_epoch, 3):
+            print("epoch ", epochId)
             scheduler.step()
             total_losses = [0, 0] * (num_refinement_stages + 1)  # heatmaps loss, paf loss per stage
             batch_per_iter_idx = 0
@@ -145,6 +154,7 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
                 else:
                     continue
 
+                print("iter = ", num_iter)
                 if num_iter % log_after == 0:
                     print('Iter: {}'.format(num_iter))
                     for loss_idx in range(len(total_losses) // 2):
@@ -165,6 +175,8 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
                     print('Validation of teacher model ', str(i))
                     evaluate(val_labels, val_output_name, val_images_folder, net)
                     net.train()
+        print("finished training model ", i)
+        models.append(net)
 
     writer.close()
 
@@ -174,19 +186,19 @@ def predict(model, dataloader):
     model.eval()
 
     for images, labels in dataloader:
-        output = model.forward(images)
+        output = model.forward(images) # 1x18x2
         outputs = torch.cat((outputs, output), 0)
     return outputs
 
 epsilon = 0.2
-def aggregated_teacher(models, dataloader, epsilon):
-
+def aggregated_teacher(models, dataloader, epsilon = 0.2):
+    """Aggregates teacher predictions for the student training data"""
     preds = torch.zeros((len(models), len(dataloader), 18, 2), dtype=torch.long)
     for i, model in enumerate(models):
         results = predict(model, dataloader) # num_images x 18 x 2
         preds[i] = results
 
-    print(preds)
+    print('preds = ', preds)
 
     ## itt kene a zajt hozzaadni
 
