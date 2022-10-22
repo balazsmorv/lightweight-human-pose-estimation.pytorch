@@ -1,3 +1,4 @@
 *.pyc
 __pycache__
 .idea/
+prepared_train_annotation.pkl
