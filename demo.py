@@ -98,6 +98,7 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth):
             total_keypoints_num += extract_keypoints(heatmaps[:, :, kpt_idx], all_keypoints_by_type, total_keypoints_num)
 
         pose_entries, all_keypoints = group_keypoints(all_keypoints_by_type, pafs)
+        print(all_keypoints)
         for kpt_id in range(all_keypoints.shape[0]):
             all_keypoints[kpt_id, 0] = (all_keypoints[kpt_id, 0] * stride / upsample_ratio - pad[1]) / scale
             all_keypoints[kpt_id, 1] = (all_keypoints[kpt_id, 1] * stride / upsample_ratio - pad[0]) / scale
@@ -112,7 +113,7 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth):
                     pose_keypoints[kpt_id, 1] = int(all_keypoints[int(pose_entries[n][kpt_id]), 1])
             pose = Pose(pose_keypoints, pose_entries[n][18])
             current_poses.append(pose)
-
+        print(current_poses)
         if track:
             track_poses(previous_poses, current_poses, smooth=smooth)
             previous_poses = current_poses

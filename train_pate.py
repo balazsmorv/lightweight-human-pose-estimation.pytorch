@@ -2,6 +2,7 @@ import argparse
 import cv2
 import os
 
+import numpy as np
 import torch
 from torch.nn import DataParallel
 import torch.optim as optim
@@ -16,18 +17,18 @@ from models.with_mobilenet import PoseEstimationWithMobileNet
 from modules.loss import l2_loss
 from modules.load_state import load_state, load_from_mobilenet
 from val import evaluate
+from modules.keypoints import extract_keypoints, group_keypoints
 from pate import perform_analysis_torch
-import pprint
+import demo
 
 cv2.setNumThreads(0)
 cv2.ocl.setUseOpenCL(False)  # To prevent freeze of DataLoader
-pp = pprint.PrettyPrinter(indent=4)
 
 def get_data_loaders(train_data, num_teachers, batch_size, num_workers):
     """ Function to create data loaders for the Teacher classifier """
     teacher_loaders = []
     #data_size = len(train_data) // (num_teachers + 2)
-    data_size = 300
+    data_size = 100
 
     for i in range(num_teachers):
         indices = list(range(i * data_size, (i + 1) * data_size))
@@ -38,11 +39,11 @@ def get_data_loaders(train_data, num_teachers, batch_size, num_workers):
 
     student_train_indices = list(range(num_teachers * data_size, (num_teachers + 1) * data_size))
     subset = Subset(train_data, student_train_indices)
-    student_train_loader = torch.utils.data.DataLoader(subset, batch_size=batch_size, num_workers=num_workers)
+    student_train_loader = torch.utils.data.DataLoader(subset, batch_size=1, num_workers=num_workers)
 
     student_test_indices = list(range((num_teachers + 1) * data_size, (num_teachers + 2) * data_size))
     subset = Subset(train_data, student_test_indices)
-    student_test_loader = torch.utils.data.DataLoader(subset, batch_size=batch_size, num_workers=num_workers)
+    student_test_loader = torch.utils.data.DataLoader(subset, batch_size=1, num_workers=num_workers)
 
     return teacher_loaders, student_train_loader, student_test_loader
 
@@ -109,7 +110,7 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
 
         net = DataParallel(net).cuda()
         net.train()
-        for epochId in range(current_epoch, 3):
+        for epochId in range(current_epoch, 2):
             print("epoch ", epochId)
             scheduler.step()
             total_losses = [0, 0] * (num_refinement_stages + 1)  # heatmaps loss, paf loss per stage
@@ -178,16 +179,29 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
         print("finished training model ", i)
         models.append(net)
 
+    aggregated_teacher(models, student_train_loader, epsilon)
+
+
     writer.close()
 
 
 def predict(model, dataloader):
-    outputs = torch.zeros(0, dtype=torch.long)
+    outputs = []
     model.eval()
 
-    for images, labels in dataloader:
-        output = model.forward(images) # 1x18x2
-        outputs = torch.cat((outputs, output), 0)
+    for batch_data in dataloader:
+        image = batch_data['image']
+        print("Images.shape = ", image.shape)
+        heatmaps, pafs, scale, pad = demo.infer_fast(model, np.squeeze(image.numpy()), 256, 8, 4, False)
+        total_keypoints_num = 0
+        all_keypoints_by_type = []
+        for kpt_idx in range(18):  # 19th for bg
+            total_keypoints_num += extract_keypoints(heatmaps[:, :, kpt_idx], all_keypoints_by_type,
+                                                     total_keypoints_num)
+        pose_entries, all_keypoints = group_keypoints(all_keypoints_by_type, pafs)
+        print("All keypoints = ", all_keypoints)
+        outputs.append(torch.from_numpy(all_keypoints))
+
     return outputs
 
 epsilon = 0.2
@@ -201,6 +215,7 @@ def aggregated_teacher(models, dataloader, epsilon = 0.2):
     print('preds = ', preds)
 
     ## itt kene a zajt hozzaadni
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
