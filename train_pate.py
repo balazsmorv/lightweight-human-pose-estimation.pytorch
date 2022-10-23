@@ -191,8 +191,9 @@ def predict(model, dataloader):
 
     for batch_data in dataloader:
         image = batch_data['image']
-        print("Images.shape = ", image.shape)
-        heatmaps, pafs, scale, pad = demo.infer_fast(model, np.squeeze(image.numpy()), 256, 8, 4, False)
+        image = np.squeeze(image.numpy())
+        image = np.moveaxis(image, 0, -1)
+        heatmaps, pafs, scale, pad = demo.infer_fast(model, image, 256, 8, 4, False)
         total_keypoints_num = 0
         all_keypoints_by_type = []
         for kpt_idx in range(18):  # 19th for bg
