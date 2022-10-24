@@ -199,6 +199,7 @@ def predict(model, dataloader):
         for kpt_idx in range(18):  # 19th for bg
             total_keypoints_num += extract_keypoints(heatmaps[:, :, kpt_idx], all_keypoints_by_type,
                                                      total_keypoints_num)
+        print("all_keypoints_by_type: ", all_keypoints_by_type)
         pose_entries, all_keypoints = group_keypoints(all_keypoints_by_type, pafs)
         print("All keypoints = ", all_keypoints)
         outputs.append(torch.from_numpy(all_keypoints))
