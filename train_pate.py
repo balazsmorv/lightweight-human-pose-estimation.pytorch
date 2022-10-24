@@ -27,8 +27,8 @@ cv2.ocl.setUseOpenCL(False)  # To prevent freeze of DataLoader
 def get_data_loaders(train_data, num_teachers, batch_size, num_workers):
     """ Function to create data loaders for the Teacher classifier """
     teacher_loaders = []
-    #data_size = len(train_data) // (num_teachers + 2)
-    data_size = 100
+    data_size = len(train_data) // (num_teachers + 2)
+    #data_size = 100
 
     for i in range(num_teachers):
         indices = list(range(i * data_size, (i + 1) * data_size))
@@ -155,7 +155,7 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
                 else:
                     continue
 
-                print("iter = ", num_iter)
+                #print("iter = ", num_iter)
                 if num_iter % log_after == 0:
                     print('Iter: {}'.format(num_iter))
                     for loss_idx in range(len(total_losses) // 2):
@@ -248,7 +248,7 @@ if __name__ == '__main__':
                         help='number of iterations to run validation')
     parser.add_argument('--epoch-count', type=int, default=200, required=False,
                         help='Number of epochs to train for')
-    parser.add_argument('--num-teachers', type=int, default=2, required=False, help='Number of teacher models')
+    parser.add_argument('--num-teachers', type=int, default=1, required=False, help='Number of teacher models')
     args = parser.parse_args()
 
     checkpoints_folder = '{}_checkpoints'.format(args.experiment_name)
