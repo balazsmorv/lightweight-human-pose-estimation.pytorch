@@ -257,6 +257,9 @@ if __name__ == '__main__':
 
     writer = SummaryWriter(args.experiment_name)
 
+    print("GPU count: ", torch.cuda.device_count())
+    print("Current GPU in use: ", torch.cuda.current_device())
+
     train(args.prepared_train_labels, args.train_images_folder, args.num_refinement_stages, args.base_lr, args.batch_size,
           args.batches_per_iter, args.num_workers, args.checkpoint_path, args.weights_only, args.from_mobilenet,
           checkpoints_folder, args.log_after, args.val_labels, args.val_images_folder, args.val_output_name,
