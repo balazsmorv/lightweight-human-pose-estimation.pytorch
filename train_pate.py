@@ -19,6 +19,7 @@ from modules.load_state import load_state, load_from_mobilenet
 from val import evaluate
 from modules.keypoints import extract_keypoints, group_keypoints
 from pate import perform_analysis_torch
+from modules.pose import Pose
 import demo
 
 cv2.setNumThreads(0)
@@ -28,7 +29,8 @@ def get_data_loaders(train_data, num_teachers, batch_size, num_workers):
     """ Function to create data loaders for the Teacher classifier """
     teacher_loaders = []
     data_size = len(train_data) // (num_teachers + 2)
-    #data_size = 100
+    print('All train data size = ', len(train_data))
+    #data_size = 10000
 
     for i in range(num_teachers):
         indices = list(range(i * data_size, (i + 1) * data_size))
@@ -50,7 +52,7 @@ def get_data_loaders(train_data, num_teachers, batch_size, num_workers):
 
 def train(prepared_train_labels, train_images_folder, num_refinement_stages, base_lr, batch_size, batches_per_iter,
           num_workers, checkpoint_path, weights_only, from_mobilenet, checkpoints_folder, log_after,
-          val_labels, val_images_folder, val_output_name, checkpoint_after, val_after, writer, num_teachers):
+          val_labels, val_images_folder, val_output_name, checkpoint_after, val_after, writer, num_teachers, epoch_count):
 
     stride = 8
     sigma = 7
@@ -73,6 +75,8 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
         print("teacher ", i)
         net = PoseEstimationWithMobileNet(num_refinement_stages)
         train_loader = train_loaders[i]
+        print("len(trainLoader) = ", len(train_loader))
+
 
         optimizer = optim.Adam([
             {'params': get_parameters_conv(net.model, 'weight')},
@@ -110,8 +114,8 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
 
         net = DataParallel(net).cuda()
         net.train()
-        for epochId in range(current_epoch, 2):
-            print("epoch ", epochId)
+        for epochId in range(current_epoch, epoch_count):
+            print(f'Epoch {epochId + 1} / {epoch_count}')
             scheduler.step()
             total_losses = [0, 0] * (num_refinement_stages + 1)  # heatmaps loss, paf loss per stage
             batch_per_iter_idx = 0
@@ -165,7 +169,7 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
                     for loss_idx in range(len(total_losses)):
                         total_losses[loss_idx] = 0
                 if num_iter % checkpoint_after == 0:
-                    snapshot_name = '{}/checkpoint_iter_{}.pth'.format(checkpoints_folder, num_iter)
+                    snapshot_name = '{}/checkpoint_iter_{}_teacher_{}.pth'.format(checkpoints_folder, num_iter, i)
                     torch.save({'state_dict': net.module.state_dict(),
                                 'optimizer': optimizer.state_dict(),
                                 'scheduler': scheduler.state_dict(),
@@ -176,6 +180,16 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
                     print('Validation of teacher model ', str(i))
                     evaluate(val_labels, val_output_name, val_images_folder, net)
                     net.train()
+        
+        # save after the last iter
+        snapshot_name = '{}/checkpoint_iter_{}_teacher_{}.pth'.format(checkpoints_folder, num_iter, i)
+        torch.save({'state_dict': net.module.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'iter': num_iter,
+            'current_epoch': epochId},
+            snapshot_name)
+
         print("finished training model ", i)
         models.append(net)
 
@@ -199,10 +213,31 @@ def predict(model, dataloader):
         for kpt_idx in range(18):  # 19th for bg
             total_keypoints_num += extract_keypoints(heatmaps[:, :, kpt_idx], all_keypoints_by_type,
                                                      total_keypoints_num)
-        print("all_keypoints_by_type: ", all_keypoints_by_type)
         pose_entries, all_keypoints = group_keypoints(all_keypoints_by_type, pafs)
-        print("All keypoints = ", all_keypoints)
-        outputs.append(torch.from_numpy(all_keypoints))
+        for kpt_id in range(all_keypoints.shape[0]):
+            all_keypoints[kpt_id, 0] = (all_keypoints[kpt_id, 0] * 8 / 4 - pad[1]) / scale
+            all_keypoints[kpt_id, 1] = (all_keypoints[kpt_id, 1] * 8 / 4 - pad[0]) / scale
+
+        num_keypoints = Pose.num_kpts
+        current_poses = []
+        for n in range(len(pose_entries)):
+            if len(pose_entries[n]) == 0:
+                continue
+            pose_keypoints = np.ones((num_keypoints, 2), dtype=np.int32) * -1
+            for kpt_id in range(num_keypoints):
+                if pose_entries[n][kpt_id] != -1.0:  # keypoint was found
+                    pose_keypoints[kpt_id, 0] = int(all_keypoints[int(pose_entries[n][kpt_id]), 0])
+                    pose_keypoints[kpt_id, 1] = int(all_keypoints[int(pose_entries[n][kpt_id]), 1])
+                    print(f'Found keypoint {kpt_id}: {int(all_keypoints[int(pose_entries[n][kpt_id]), 0])}')
+                    print(f'Found keypoint {kpt_id}: {int(all_keypoints[int(pose_entries[n][kpt_id]), 1])}')
+            pose = Pose(pose_keypoints, pose_entries[n][18])
+            current_poses.append(pose)
+        
+
+        for pose in current_poses:
+            print(pose.keypoints)
+        
+        outputs.append(torch.from_numpy(current_poses.keypoints))
 
     return outputs
 
@@ -242,16 +277,16 @@ if __name__ == '__main__':
     parser.add_argument('--val-images-folder', type=str, required=True, help='path to COCO val images folder')
     parser.add_argument('--val-output-name', type=str, default='detections.json',
                         help='name of output json file with detected keypoints')
-    parser.add_argument('--checkpoint-after', type=int, default=5000,
+    parser.add_argument('--checkpoint-after', type=int, default=1000,
                         help='number of iterations to save checkpoint')
-    parser.add_argument('--val-after', type=int, default=5000,
+    parser.add_argument('--val-after', type=int, default=1000,
                         help='number of iterations to run validation')
     parser.add_argument('--epoch-count', type=int, default=200, required=False,
                         help='Number of epochs to train for')
     parser.add_argument('--num-teachers', type=int, default=1, required=False, help='Number of teacher models')
     args = parser.parse_args()
 
-    checkpoints_folder = '{}_checkpoints'.format(args.experiment_name)
+    checkpoints_folder = '/datadrive/checkpoints/{}_checkpoints'.format(args.experiment_name)
     if not os.path.exists(checkpoints_folder):
         os.makedirs(checkpoints_folder)
 
@@ -263,4 +298,4 @@ if __name__ == '__main__':
     train(args.prepared_train_labels, args.train_images_folder, args.num_refinement_stages, args.base_lr, args.batch_size,
           args.batches_per_iter, args.num_workers, args.checkpoint_path, args.weights_only, args.from_mobilenet,
           checkpoints_folder, args.log_after, args.val_labels, args.val_images_folder, args.val_output_name,
-          args.checkpoint_after, args.val_after, writer, args.num_teachers)
+          args.checkpoint_after, args.val_after, writer, args.num_teachers, args.epoch_count)
