@@ -26,7 +26,11 @@ def predict(model, dataloader):
     outputs = []
     model.eval()
 
+    j = 0
     for batch_data in dataloader:
+        j += 1
+        print(f'batch number {j}')
+        keypoints = []
         image = batch_data['image']
         image = np.squeeze(image.numpy())
         image = np.moveaxis(image, 0, -1)
@@ -53,15 +57,11 @@ def predict(model, dataloader):
                     pose_keypoints[kpt_id, 1] = int(all_keypoints[int(pose_entries[n][kpt_id]), 1])
                     print(f'Found keypoint {kpt_id}: {int(all_keypoints[int(pose_entries[n][kpt_id]), 0])}')
                     print(f'Found keypoint {kpt_id}: {int(all_keypoints[int(pose_entries[n][kpt_id]), 1])}')
+                    keypoints.append(int(all_keypoints[int(pose_entries[n][kpt_id]), 0]))
+                    keypoints.append(int(all_keypoints[int(pose_entries[n][kpt_id]), 1]))
                 else:
                     print(f'No keypoint found for image')
-            pose = Pose(pose_keypoints, pose_entries[n][18])
-            current_poses.append(pose)
-
-        for pose in current_poses:
-            print(pose.keypoints)
-
-
+        outputs.append(keypoints)
 
     return outputs
 
@@ -73,8 +73,8 @@ def aggregated_teacher(models, dataloader, epsilon=0.2):
     """Aggregates teacher predictions for the student training data"""
     preds = torch.zeros((len(models), len(dataloader), 18, 2), dtype=torch.long)
     for i, model in enumerate(models):
-        results = predict(model, dataloader)  # num_images x num_poses x 18 x 2
-        preds[i] = results
+        out = predict(model, dataloader) # len = num_pic
+        print(out)
 
     print('preds = ', preds)
 
