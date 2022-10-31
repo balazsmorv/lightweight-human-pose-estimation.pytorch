@@ -7,6 +7,8 @@ import pickle
 import multiprocessing
 import json
 import shutil
+import numpy
+import scipy.cluster.hierarchy as hcluster
 
 from datasets.coco import CocoTrainDataset
 from modules.keypoints import extract_keypoints, group_keypoints
@@ -19,6 +21,8 @@ from train_pate import get_data_loaders
 from torchvision import transforms
 from datasets.transformations import ConvertKeypoints, Scale, Rotate, CropPad, Flip
 from forward import run_demo
+import pixellib
+from pixellib.torchbackend.instance import instanceSegmentation
 
 
 cv2.setNumThreads(0)
@@ -29,11 +33,49 @@ models = []
 
 epsilon = 0.2
 
+
 # Make a training json for the student model. Aggregate the keypoints from the teachers
 def make_student_train_json():
-    # open the training json
-    json_path = ""
+    # open the teacher prediction jsons
+    jsons = []
+    for i in range(10):
+        with open(f'teacher_{i}.json', 'r') as openfile:
+            json_object = json.load(openfile)
+            jsons.append(json_object)
+            openfile.close()
 
+    for i in range(len(jsons[0]["images_preds"])): # for every image
+        filename = jsons[0]["images_preds"][i]["filename"]
+
+        max_num_poses = 0
+
+        for j, teacher_json in enumerate(jsons): # for every teacher
+            preds = teacher_json["images_preds"][i]["preds"]
+            num_poses = len(preds)
+            if num_poses > max_num_poses:
+                max_num_poses = num_poses
+
+        predictions = torch.zeros((max_num_poses, 10, 3*18), dtype=torch.int)
+        categorized_predictions = torch.zeros((max_num_poses, 10, 3*18), dtype=torch.int)
+
+        for j, teacher_json in enumerate(jsons): # for every teacher
+            for k, pred in enumerate(teacher_json["images_preds"][i]["preds"]):
+                predictions[k][j] = torch.tensor(pred["kpts"], dtype=torch.int)
+                pose_mtx = predictions[k]
+                for col_id in range(0, pose_mtx.shape[1], 3):
+                    keypoint_matrix = pose_mtx[:, col_id:col_id+1]
+                    keypoint_matrix = keypoint_matrix[keypoint_matrix.nonzero()]
+                    clusters = categorize(keypoint_matrix)
+                    print(clusters)
+        print(f'predictions for {filename}: {predictions.shape}')
+
+
+
+def categorize(data):
+    threshold = 10.0 # maximum distance between keypoints of the same category
+    print('data.shape: ', data.shape)
+    clusters = hcluster.fclusterdata(data.detach().numpy(), threshold, criterion="distance")
+    return clusters
 
 
 def aggregated_teacher(models, dataloader, epsilon=0.2):
@@ -46,7 +88,7 @@ def aggregated_teacher(models, dataloader, epsilon=0.2):
         out_file = open(f"teacher_{i}.json", "w")
         json.dump(out, out_file, indent=6)
 
-    
+
 
 
 if __name__ == '__main__':

@@ -55,9 +55,11 @@ def run_demo(net, images_path, teacher_id, height_size=256, cpu=False):
     delay = 1
     for filename in os.listdir(images_path):
         img = cv2.imread(os.path.join(images_path, filename), cv2.IMREAD_COLOR)
+        h, w = img.shape[:2]
         #print(f'Run demo for image {img}')
         file_data = {
             'filename': filename,
+            'size': [w, h],
             'preds': []
         }
         orig_img = img.copy()
