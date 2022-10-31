@@ -3,6 +3,10 @@ import cv2
 import os
 import numpy as np
 import torch
+import pickle
+import multiprocessing
+import json
+import shutil
 
 from datasets.coco import CocoTrainDataset
 from modules.keypoints import extract_keypoints, group_keypoints
@@ -14,6 +18,7 @@ from modules.load_state import load_state
 from train_pate import get_data_loaders
 from torchvision import transforms
 from datasets.transformations import ConvertKeypoints, Scale, Rotate, CropPad, Flip
+from forward import run_demo
 
 
 cv2.setNumThreads(0)
@@ -22,61 +27,18 @@ cv2.ocl.setUseOpenCL(False)  # To prevent freeze of DataLoader
 
 models = []
 
-def predict(model, dataloader):
-    outputs = []
-    model.eval()
-
-    j = 0
-    for batch_data in dataloader:
-        j += 1
-        print(f'batch number {j}')
-        keypoints = []
-        image = batch_data['image']
-        image = np.squeeze(image.numpy())
-        image = np.moveaxis(image, 0, -1)
-        heatmaps, pafs, scale, pad = demo.infer_fast(model, image, 256, 8, 4, False)
-        total_keypoints_num = 0
-        all_keypoints_by_type = []
-        for kpt_idx in range(18):  # 19th for bg
-            total_keypoints_num += extract_keypoints(heatmaps[:, :, kpt_idx], all_keypoints_by_type,
-                                                     total_keypoints_num)
-        pose_entries, all_keypoints = group_keypoints(all_keypoints_by_type, pafs)
-        for kpt_id in range(all_keypoints.shape[0]):
-            all_keypoints[kpt_id, 0] = (all_keypoints[kpt_id, 0] * 8 / 4 - pad[1]) / scale
-            all_keypoints[kpt_id, 1] = (all_keypoints[kpt_id, 1] * 8 / 4 - pad[0]) / scale
-
-        num_keypoints = Pose.num_kpts
-        current_poses = []
-        for n in range(len(pose_entries)):
-            if len(pose_entries[n]) == 0:
-                continue
-            pose_keypoints = np.ones((num_keypoints, 2), dtype=np.int32) * -1
-            for kpt_id in range(num_keypoints):
-                if pose_entries[n][kpt_id] != -1.0:  # keypoint was found
-                    pose_keypoints[kpt_id, 0] = int(all_keypoints[int(pose_entries[n][kpt_id]), 0])
-                    pose_keypoints[kpt_id, 1] = int(all_keypoints[int(pose_entries[n][kpt_id]), 1])
-                    print(f'Found keypoint {kpt_id}: {int(all_keypoints[int(pose_entries[n][kpt_id]), 0])}')
-                    print(f'Found keypoint {kpt_id}: {int(all_keypoints[int(pose_entries[n][kpt_id]), 1])}')
-                    keypoints.append(int(all_keypoints[int(pose_entries[n][kpt_id]), 0]))
-                    keypoints.append(int(all_keypoints[int(pose_entries[n][kpt_id]), 1]))
-                else:
-                    print(f'No keypoint found for image')
-        outputs.append(keypoints)
-
-    return outputs
-
-
 epsilon = 0.2
 
 
 def aggregated_teacher(models, dataloader, epsilon=0.2):
     """Aggregates teacher predictions for the student training data"""
-    preds = torch.zeros((len(models), len(dataloader), 18, 2), dtype=torch.long)
     for i, model in enumerate(models):
-        out = predict(model, dataloader) # len = num_pic
-        print(out)
+        print(f'Run demo for model {i}')
 
-    print('preds = ', preds)
+        # num_pictures
+        out = run_demo(model, '/home/oem/Dokumentumok/pose_estimation/lightweight-human-pose-estimation.pytorch/student_train_images', i)
+        out_file = open(f"teacher_{i}.json", "w")
+        json.dump(out, out_file, indent=6)
 
     ## itt kene a zajt hozzaadni
 

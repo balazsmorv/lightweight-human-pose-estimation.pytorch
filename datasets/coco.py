@@ -35,12 +35,14 @@ class CocoTrainDataset(Dataset):
     def __getitem__(self, idx):
         label = copy.deepcopy(self._labels[idx])  # label modified in transform
         image = cv2.imread(os.path.join(self._images_folder, label['img_paths']), cv2.IMREAD_COLOR)
+        p = os.path.join(self._images_folder, label['img_paths'])
         mask = np.ones(shape=(label['img_height'], label['img_width']), dtype=np.float32)
         mask = get_mask(label['segmentations'], mask)
         sample = {
             'label': label,
             'image': image,
-            'mask': mask
+            'mask': mask,
+            'path': os.path.join(self._images_folder, label['img_paths'])
         }
         if self._transform:
             sample = self._transform(sample)
