@@ -41,7 +41,8 @@ def infer_fast(net, img, net_input_height_size, stride, upsample_ratio, cpu,
 
 def run_demo(net, images_path, teacher_id, height_size=256, cpu=False):
     out = {
-        'teacher_id': teacher_id
+        'teacher_id': teacher_id,
+        'images_preds': []
     }
     net = net.eval()
     if not cpu:
@@ -55,7 +56,10 @@ def run_demo(net, images_path, teacher_id, height_size=256, cpu=False):
     for filename in os.listdir(images_path):
         img = cv2.imread(os.path.join(images_path, filename), cv2.IMREAD_COLOR)
         #print(f'Run demo for image {img}')
-        keypts = []
+        file_data = {
+            'filename': filename,
+            'preds': []
+        }
         orig_img = img.copy()
         heatmaps, pafs, scale, pad = infer_fast(net, img, height_size, stride, upsample_ratio, cpu)
 
@@ -72,6 +76,7 @@ def run_demo(net, images_path, teacher_id, height_size=256, cpu=False):
             all_keypoints[kpt_id, 1] = (all_keypoints[kpt_id, 1] * stride / upsample_ratio - pad[0]) / scale
         current_poses = []
         for n in range(len(pose_entries)):
+            keypts = []
             if len(pose_entries[n]) == 0:
                 continue
             pose_keypoints = np.ones((num_keypoints, 2), dtype=np.int32) * -1
@@ -88,8 +93,14 @@ def run_demo(net, images_path, teacher_id, height_size=256, cpu=False):
                     keypts.append(0)
                     keypts.append(0)
                     keypts.append(0)
+            pose = Pose(pose_keypoints, pose_entries[n][18])
+            x, y, w, h = pose.bbox
+            file_data['preds'].append({
+                'bbox': [x, y, x+w, y+h],
+                'kpts': keypts
+            })
 
-        out[filename] = keypts
+        out['images_preds'].append(file_data)
 
 
     return out

@@ -29,6 +29,12 @@ models = []
 
 epsilon = 0.2
 
+# Make a training json for the student model. Aggregate the keypoints from the teachers
+def make_student_train_json():
+    # open the training json
+    json_path = ""
+
+
 
 def aggregated_teacher(models, dataloader, epsilon=0.2):
     """Aggregates teacher predictions for the student training data"""
@@ -40,7 +46,7 @@ def aggregated_teacher(models, dataloader, epsilon=0.2):
         out_file = open(f"teacher_{i}.json", "w")
         json.dump(out, out_file, indent=6)
 
-    ## itt kene a zajt hozzaadni
+    
 
 
 if __name__ == '__main__':
@@ -80,6 +86,6 @@ if __name__ == '__main__':
 
     train_loaders, student_train_loader, student_test_loader = get_data_loaders(train_set, 10, 160, 8)
 
-    aggregated_teacher(models, student_train_loader)
-
+    #aggregated_teacher(models, student_train_loader)
+    make_student_train_json()
 
