@@ -29,6 +29,7 @@ def get_data_loaders(train_data, num_teachers, batch_size, num_workers):
     """ Function to create data loaders for the Teacher classifier """
     teacher_loaders = []
     data_size = len(train_data) // (num_teachers + 2)
+    print('data_size = ', data_size)
     print('All train data size = ', len(train_data))
     #data_size = 10000
 
@@ -286,7 +287,7 @@ if __name__ == '__main__':
     parser.add_argument('--num-teachers', type=int, default=1, required=False, help='Number of teacher models')
     args = parser.parse_args()
 
-    checkpoints_folder = '/datadrive/checkpoints/{}_checkpoints'.format(args.experiment_name)
+    checkpoints_folder = '/home/oem/Dokumentumok/pose_estimation/lightweight-human-pose-estimation.pytorch/{}_checkpoints'.format(args.experiment_name)
     if not os.path.exists(checkpoints_folder):
         os.makedirs(checkpoints_folder)
 

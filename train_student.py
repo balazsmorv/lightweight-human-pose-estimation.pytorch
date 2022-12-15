@@ -61,21 +61,12 @@ def make_student_train_json():
         for j, teacher_json in enumerate(jsons): # for every teacher
             for k, pred in enumerate(teacher_json["images_preds"][i]["preds"]):
                 predictions[k][j] = torch.tensor(pred["kpts"], dtype=torch.int)
-                pose_mtx = predictions[k]
-                for col_id in range(0, pose_mtx.shape[1], 3):
-                    keypoint_matrix = pose_mtx[:, col_id:col_id+1]
-                    keypoint_matrix = keypoint_matrix[keypoint_matrix.nonzero()]
-                    clusters = categorize(keypoint_matrix)
-                    print(clusters)
         print(f'predictions for {filename}: {predictions.shape}')
 
 
 
-def categorize(data):
-    threshold = 10.0 # maximum distance between keypoints of the same category
-    print('data.shape: ', data.shape)
-    clusters = hcluster.fclusterdata(data.detach().numpy(), threshold, criterion="distance")
-    return clusters
+
+
 
 
 def aggregated_teacher(models, dataloader, epsilon=0.2):
